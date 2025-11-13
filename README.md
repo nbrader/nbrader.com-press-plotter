@@ -6,12 +6,16 @@ A web application that visualizes button press patterns over time.
 
 - **Real-time visualization** of button press/release patterns
 - **Time axis** with second markers for easy timeline reading
+- **Grid background** for easy visual alignment
 - **Horizontal scrolling** for long recordings
 - **Duration display** showing total recording time
 - **Recording indicator** to show active recording status
 - **Clear button** to reset visualization without stopping
 - **High resolution** tracking (100ms intervals)
 - **Visual feedback** on button press with color change
+- **Keyboard support** - Use spacebar to press/release
+- **Statistics panel** - Real-time metrics (press count, averages, totals)
+- **Data export** - Export recordings as JSON to browser console
 
 ## What it does
 
