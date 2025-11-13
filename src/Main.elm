@@ -42,6 +42,7 @@ initialModel =
 type Msg
     = StartRecording
     | StopRecording
+    | ClearRecording
     | SetValue Float
     | Tick Posix
     | UpdateCurrentTime Posix
@@ -58,6 +59,9 @@ update msg model =
         StopRecording ->
             ( { model | recording = False, currentStart = Nothing }, Cmd.none )
 
+        ClearRecording ->
+            ( { model | events = [], currentValue = 0 }, Cmd.none )
+
         SetValue value ->
             if model.recording then
                 let
@@ -65,7 +69,7 @@ update msg model =
                         case (model.lastTime, model.currentStart) of
                             (Just lastTime, Just currentStart) ->
                                 let
-                                    elapsed = (toFloat (Time.posixToMillis lastTime - Time.posixToMillis currentStart)) / 500
+                                    elapsed = (toFloat (Time.posixToMillis lastTime - Time.posixToMillis currentStart)) / 100
                                     newEvent = { startX = sum (List.map .length model.events), length = elapsed, color = if model.currentValue == 1 then "blue" else "green" }
                                 in
                                 (newEvent :: model.events, Just lastTime)
@@ -87,31 +91,94 @@ update msg model =
             ( { model | recording = True, currentStart = Just time, lastTime = Just time, events = [] }, Cmd.none )
 
 
+-- Helper Functions
+
+getTotalTime : Model -> Float
+getTotalTime model =
+    let
+        eventsTime = sum (List.map .length model.events)
+        currentTime =
+            case (model.currentStart, model.lastTime) of
+                (Just start, Just lastTime) ->
+                    (toFloat (Time.posixToMillis lastTime - Time.posixToMillis start)) / 100
+                _ ->
+                    0
+    in
+    eventsTime + currentTime
+
+
+timeAxisMarkers : Float -> List (Svg Msg)
+timeAxisMarkers totalTime =
+    let
+        maxSeconds = ceiling (totalTime / 10)
+        secondMarkers = List.range 0 maxSeconds
+    in
+    List.concatMap (\sec ->
+        let
+            xPos = toFloat sec * 10
+        in
+        [ Svg.line
+            [ SvgA.x1 (String.fromFloat xPos)
+            , SvgA.y1 "350"
+            , SvgA.x2 (String.fromFloat xPos)
+            , SvgA.y2 "360"
+            , SvgA.stroke "#666"
+            , SvgA.strokeWidth "1"
+            ] []
+        , svgText
+            [ SvgA.x (String.fromFloat xPos)
+            , SvgA.y "375"
+            , SvgA.fontSize "12"
+            , SvgA.textAnchor "middle"
+            , SvgA.fill "#666"
+            ]
+            [ Svg.text (String.fromInt sec ++ "s") ]
+        ]
+    ) secondMarkers
+
+
 -- View
 
 view : Model -> Html Msg
 view model =
+    let
+        totalTime = getTotalTime model
+        svgWidth = max 800 (totalTime + 100)
+        recordingIndicator =
+            if model.recording then
+                div [ style "display" "inline-block", style "margin-left" "10px", style "color" "red", style "font-weight" "bold" ]
+                    [ text "⬤ RECORDING" ]
+            else
+                div [ style "display" "inline-block", style "margin-left" "10px", style "color" "#999" ]
+                    [ text "○ Not Recording" ]
+    in
     div [ style "padding" "20px", style "font-family" "sans-serif" ]
         [ h1 [] [ text "Press Plotter" ]
         , p [] [ text "Visualize button press patterns over time" ]
         , div [ style "margin" "20px 0" ]
             [ button [ onClick StartRecording, style "margin-right" "10px", style "padding" "10px 20px" ] [ text "Start Recording" ]
             , button [ onClick StopRecording, style "margin-right" "10px", style "padding" "10px 20px" ] [ text "Stop Recording" ]
-            , button [ onMouseDown (SetValue 1), onMouseUp (SetValue 0), style "padding" "10px 20px", style "background-color" "#4CAF50", style "color" "white", style "border" "none", style "cursor" "pointer" ]
+            , button [ onClick ClearRecording, style "margin-right" "10px", style "padding" "10px 20px", style "background-color" "#ff9800", style "color" "white", style "border" "none" ] [ text "Clear" ]
+            , button [ onMouseDown (SetValue 1), onMouseUp (SetValue 0), style "padding" "10px 20px", style "background-color" (if model.currentValue == 1 then "#2196F3" else "#4CAF50"), style "color" "white", style "border" "none", style "cursor" "pointer" ]
                 [ text "Hold Me to Record Press" ]
+            , recordingIndicator
             ]
         , div [ style "margin" "20px 0" ]
             [ div [ style "display" "inline-block", style "margin-right" "20px" ]
                 [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "blue", style "margin-right" "5px", style "vertical-align" "middle" ] []
                 , text "Pressed"
                 ]
-            , div [ style "display" "inline-block" ]
+            , div [ style "display" "inline-block", style "margin-right" "20px" ]
                 [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "green", style "margin-right" "5px", style "vertical-align" "middle" ] []
                 , text "Released"
                 ]
+            , div [ style "display" "inline-block", style "font-weight" "bold" ]
+                [ text ("Duration: " ++ String.fromFloat (totalTime / 10) ++ "s") ]
             ]
-        , svg [ SvgA.width "800", SvgA.height "400", SvgA.style "border: 1px solid #ccc; background-color: #f9f9f9;" ]
-            (List.concatMap eventToRectangles model.events ++ [currentRectangle model])
+        , div [ style "overflow-x" "auto", style "margin" "20px 0" ]
+            [ svg [ SvgA.width (String.fromFloat svgWidth), SvgA.height "400", SvgA.style "border: 1px solid #ccc; background-color: #f9f9f9;" ]
+                (List.concatMap eventToRectangles model.events ++ [currentRectangle model] ++ timeAxisMarkers totalTime)
+            ]
         ]
 
 
@@ -125,7 +192,7 @@ currentRectangle model =
     case (model.currentStart, model.lastTime) of
         (Just start, Just lastTime) ->
             let
-                elapsed = (toFloat (Time.posixToMillis lastTime - Time.posixToMillis start)) / 500
+                elapsed = (toFloat (Time.posixToMillis lastTime - Time.posixToMillis start)) / 100
                 color = if model.currentValue == 1 then "blue" else "green"
             in
             rect [ SvgA.x (String.fromFloat (sum (List.map .length model.events))), SvgA.y "50", SvgA.width (String.fromFloat elapsed), SvgA.height "300", SvgA.fill color ] []
@@ -138,7 +205,7 @@ currentRectangle model =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    every 500 Tick
+    every 100 Tick
 
 
 -- Init
