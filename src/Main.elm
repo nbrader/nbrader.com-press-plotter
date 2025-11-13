@@ -1,35 +1,44 @@
-module Main exposing (..)
+port module Main exposing (main)
 
 import Browser
-import Browser.Events exposing (onKeyDown, onKeyUp)
-import Html exposing (Html, button, div, text, h1, h2, p, span)
-import Html.Attributes exposing (style, attribute)
-import Html.Events exposing (onClick, onMouseDown, onMouseUp)
+import Browser.Events
+import Html exposing (..)
+import Html.Attributes exposing (attribute, disabled, style)
+import Html.Events exposing (onClick)
 import Json.Decode as Decode
-import Svg exposing (Svg, svg, rect, text as svgText, line)
-import Svg.Attributes as SvgA
-import Time exposing (Posix, every, now)
-import Task exposing (Task)
-import List exposing (sum)
+import Json.Encode as Encode
+import Svg exposing (Svg, g, line, rect, svg, text, text_)
+import Svg.Attributes as SvgAttr
+import Time
 
 
--- Constants
-
-config =
-    { tickIntervalMs = 100
-    , msToPixels = 100  -- 100ms = 1 pixel, so 1 second = 10 pixels
-    , timelineYStart = 50
-    , timelineHeight = 300
-    , timeAxisY = 350
-    , timeAxisTickHeight = 10
-    , timeAxisLabelY = 375
-    , minSvgWidth = 800
-    , svgHeight = 400
-    , svgPadding = 100
-    }
+-- PORTS
 
 
--- Model
+port exportToConsole : Encode.Value -> Cmd msg
+
+
+port scrollTimelineToEnd : () -> Cmd msg
+
+
+port userScrolledLeft : (() -> msg) -> Sub msg
+
+
+-- MAIN
+
+
+main : Program () Model Msg
+main =
+    Browser.element
+        { init = init
+        , update = update
+        , subscriptions = subscriptions
+        , view = view
+        }
+
+
+-- MODEL
+
 
 type ButtonState
     = Pressed
@@ -45,479 +54,784 @@ type alias Event =
 
 type alias Statistics =
     { pressCount : Int
-    , totalPressedTime : Float
-    , totalReleasedTime : Float
+    , releaseCount : Int
+    , totalPressTime : Float
+    , totalReleaseTime : Float
     , averagePressTime : Float
     , averageReleaseTime : Float
     }
 
+
 type alias Model =
     { events : List Event
     , recording : Bool
-    , currentStart : Maybe Posix
-    , currentState : ButtonState
-    , lastTime : Maybe Posix
+    , buttonState : ButtonState
+    , currentEventStartTime : Float
+    , elapsedTime : Float
+    , pixelsPerSecond : Float
+    , autoScroll : Bool
+    , recordingStartTime : Int
     }
 
-initialModel : Model
-initialModel =
-    { events = []
-    , recording = False
-    , currentStart = Nothing
-    , currentState = Released
-    , lastTime = Nothing
-    }
-
-
--- Messages
 
 type Msg
     = StartRecording
     | StopRecording
-    | ClearRecording
-    | SetButtonState ButtonState
-    | KeyPressed String
-    | KeyReleased String
-    | Tick Posix
-    | UpdateCurrentTime Posix
+    | ClearEvents
+    | ButtonDown
+    | ButtonUp
+    | Tick Time.Posix
     | ExportData
+    | ZoomIn
+    | ZoomOut
+    | ToggleAutoScroll
+    | UserScrolledLeft
 
 
--- Update
-
-calculateElapsedPixels : Posix -> Posix -> Float
-calculateElapsedPixels startTime endTime =
-    toFloat (Time.posixToMillis endTime - Time.posixToMillis startTime) / toFloat config.msToPixels
+-- CONFIG
 
 
-getEventsWidth : List Event -> Float
-getEventsWidth events =
-    sum (List.map .length events)
+config =
+    { tickInterval = 10 -- milliseconds (update interval for display - actual timing is timestamp-based)
+    , defaultPixelsPerSecond = 50 -- default scale - can be adjusted with zoom controls
+    , minPixelsPerSecond = 10 -- minimum zoom out
+    , maxPixelsPerSecond = 800 -- maximum zoom in
+    , timelineHeight = 100
+    , eventHeight = 80
+    , gridSpacing = 50
+    , secondMarkerHeight = 20
+    , svgHeight = 200
+    , buttonPressedColor = "#3498db"
+    , buttonReleasedColor = "#2ecc71"
+    , pressEventColor = "#3498db"
+    , releaseEventColor = "#2ecc71"
+    , gridColor = "#e0e0e0"
+    , secondMarkerColor = "#333"
+    }
+
+
+-- INIT
+
+
+init : () -> ( Model, Cmd Msg )
+init _ =
+    ( { events = []
+      , recording = False
+      , buttonState = Released
+      , currentEventStartTime = 0
+      , elapsedTime = 0
+      , pixelsPerSecond = config.defaultPixelsPerSecond
+      , autoScroll = True
+      , recordingStartTime = 0
+      }
+    , Cmd.none
+    )
+
+
+-- UPDATE
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         StartRecording ->
-            ( { initialModel | recording = True }, Task.perform UpdateCurrentTime now )
+            ( { model
+                | recording = True
+                , events = []
+                , elapsedTime = 0
+                , currentEventStartTime = 0
+                , buttonState = Released
+                , recordingStartTime = 0
+              }
+            , Cmd.none
+            )
 
         StopRecording ->
-            ( { model | recording = False, currentStart = Nothing }, Cmd.none )
+            let
+                finalModel =
+                    if model.recording then
+                        finalizeCurrentEvent model
 
-        ClearRecording ->
-            ( { model | events = [], currentState = Released }, Cmd.none )
+                    else
+                        model
+            in
+            ( { finalModel | recording = False }, Cmd.none )
 
-        SetButtonState newState ->
-            if model.recording && newState /= model.currentState then
+        ClearEvents ->
+            ( { model
+                | events = []
+                , elapsedTime = 0
+                , currentEventStartTime = 0
+                , buttonState = Released
+              }
+            , Cmd.none
+            )
+
+        ButtonDown ->
+            if model.recording && model.buttonState == Released then
                 let
-                    (updatedEvents, newCurrentStart) =
-                        case (model.lastTime, model.currentStart) of
-                            (Just lastTime, Just currentStart) ->
-                                let
-                                    elapsed = calculateElapsedPixels currentStart lastTime
-                                    newEvent =
-                                        { startX = getEventsWidth model.events
-                                        , length = elapsed
-                                        , state = model.currentState
-                                        }
-                                in
-                                (newEvent :: model.events, Just lastTime)
+                    eventLength =
+                        timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
 
-                            _ ->
-                                (model.events, model.currentStart)
+                    newEvent =
+                        { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
+                        , length = eventLength
+                        , state = Released
+                        }
                 in
-                ( { model | currentState = newState, events = updatedEvents, currentStart = newCurrentStart }, Cmd.none )
+                ( { model
+                    | buttonState = Pressed
+                    , currentEventStartTime = model.elapsedTime
+                    , events = model.events ++ [ newEvent ]
+                  }
+                , Cmd.none
+                )
+
             else
                 ( model, Cmd.none )
 
-        KeyPressed key ->
-            if key == " " then
-                update (SetButtonState Pressed) model
+        ButtonUp ->
+            if model.recording && model.buttonState == Pressed then
+                let
+                    eventLength =
+                        timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
+
+                    newEvent =
+                        { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
+                        , length = eventLength
+                        , state = Pressed
+                        }
+                in
+                ( { model
+                    | buttonState = Released
+                    , currentEventStartTime = model.elapsedTime
+                    , events = model.events ++ [ newEvent ]
+                  }
+                , Cmd.none
+                )
+
             else
                 ( model, Cmd.none )
 
-        KeyReleased key ->
-            if key == " " then
-                update (SetButtonState Released) model
+        Tick posix ->
+            if model.recording then
+                let
+                    currentTimeMillis =
+                        Time.posixToMillis posix
+
+                    ( startTime, elapsed ) =
+                        if model.recordingStartTime == 0 then
+                            -- First tick - set the start time
+                            ( currentTimeMillis, 0 )
+
+                        else
+                            -- Calculate elapsed time from start
+                            ( model.recordingStartTime
+                            , toFloat (currentTimeMillis - model.recordingStartTime) / 1000
+                            )
+
+                    cmd =
+                        if model.autoScroll then
+                            scrollTimelineToEnd ()
+
+                        else
+                            Cmd.none
+                in
+                ( { model
+                    | elapsedTime = elapsed
+                    , recordingStartTime = startTime
+                  }
+                , cmd
+                )
+
             else
                 ( model, Cmd.none )
 
         ExportData ->
-            -- For now, just log to console via Debug (in real app would use ports)
+            ( model, exportToConsole (encodeModelData model) )
+
+        ZoomIn ->
             let
-                _ = Debug.log "Export data" (exportToJson model)
+                newScale =
+                    min config.maxPixelsPerSecond (model.pixelsPerSecond * 2)
             in
-            ( model, Cmd.none )
+            ( { model | pixelsPerSecond = newScale }, Cmd.none )
 
-        Tick time ->
-            if model.recording then
-                ( { model | lastTime = Just time }, Cmd.none )
-            else
-                ( model, Cmd.none )
+        ZoomOut ->
+            let
+                newScale =
+                    max config.minPixelsPerSecond (model.pixelsPerSecond / 2)
+            in
+            ( { model | pixelsPerSecond = newScale }, Cmd.none )
 
-        UpdateCurrentTime time ->
-            ( { model | recording = True, currentStart = Just time, lastTime = Just time, events = [] }, Cmd.none )
+        ToggleAutoScroll ->
+            ( { model | autoScroll = not model.autoScroll }, Cmd.none )
+
+        UserScrolledLeft ->
+            ( { model | autoScroll = False }, Cmd.none )
 
 
--- Helper Functions
-
-getTotalTimePixels : Model -> Float
-getTotalTimePixels model =
+finalizeCurrentEvent : Model -> Model
+finalizeCurrentEvent model =
     let
-        eventsWidth = getEventsWidth model.events
-        currentWidth =
-            case (model.currentStart, model.lastTime) of
-                (Just start, Just lastTime) ->
-                    calculateElapsedPixels start lastTime
-                _ ->
-                    0
+        eventLength =
+            timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
+
+        newEvent =
+            { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
+            , length = eventLength
+            , state = model.buttonState
+            }
     in
-    eventsWidth + currentWidth
+    { model | events = model.events ++ [ newEvent ] }
 
 
-getTotalTimeSeconds : Model -> Float
-getTotalTimeSeconds model =
-    getTotalTimePixels model / 10  -- 10 pixels = 1 second
+-- HELPER FUNCTIONS
 
 
-getColorForState : ButtonState -> String
-getColorForState state =
-    case state of
-        Pressed ->
-            "blue"
-
-        Released ->
-            "green"
+timeToPixels : Float -> Float -> Float
+timeToPixels pixelsPerSecond seconds =
+    seconds * pixelsPerSecond
 
 
-calculateStatistics : List Event -> Statistics
-calculateStatistics events =
+pixelsToTime : Float -> Float -> Float
+pixelsToTime pixelsPerSecond pixels =
+    pixels / pixelsPerSecond
+
+
+calculateStatistics : Model -> Statistics
+calculateStatistics model =
     let
-        pressedEvents = List.filter (\e -> e.state == Pressed) events
-        releasedEvents = List.filter (\e -> e.state == Released) events
+        allEvents =
+            if model.recording then
+                finalizeCurrentEvent model |> .events
 
-        totalPressedPixels = sum (List.map .length pressedEvents)
-        totalReleasedPixels = sum (List.map .length releasedEvents)
+            else
+                model.events
 
-        pressCount = List.length pressedEvents
-        releaseCount = List.length releasedEvents
+        pressEvents =
+            List.filter (\e -> e.state == Pressed) allEvents
 
-        avgPress = if pressCount > 0 then totalPressedPixels / toFloat pressCount else 0
-        avgRelease = if releaseCount > 0 then totalReleasedPixels / toFloat releaseCount else 0
+        releaseEvents =
+            List.filter (\e -> e.state == Released && e.startX > 0) allEvents
+
+        totalPressTime =
+            pressEvents
+                |> List.map .length
+                |> List.sum
+                |> pixelsToTime model.pixelsPerSecond
+
+        totalReleaseTime =
+            releaseEvents
+                |> List.map .length
+                |> List.sum
+                |> pixelsToTime model.pixelsPerSecond
+
+        pressCount =
+            List.length pressEvents
+
+        releaseCount =
+            List.length releaseEvents
+
+        averagePressTime =
+            if pressCount > 0 then
+                totalPressTime / toFloat pressCount
+
+            else
+                0
+
+        averageReleaseTime =
+            if releaseCount > 0 then
+                totalReleaseTime / toFloat releaseCount
+
+            else
+                0
     in
     { pressCount = pressCount
-    , totalPressedTime = totalPressedPixels / 10  -- Convert to seconds
-    , totalReleasedTime = totalReleasedPixels / 10
-    , averagePressTime = avgPress / 10
-    , averageReleaseTime = avgRelease / 10
+    , releaseCount = releaseCount
+    , totalPressTime = totalPressTime
+    , totalReleaseTime = totalReleaseTime
+    , averagePressTime = averagePressTime
+    , averageReleaseTime = averageReleaseTime
     }
-
-
-exportToJson : Model -> String
-exportToJson model =
-    let
-        stats = calculateStatistics model.events
-        eventsStr = String.join "," (List.map eventToJsonString model.events)
-    in
-    "{"
-        ++ "\"totalEvents\":" ++ String.fromInt (List.length model.events)
-        ++ ",\"pressCount\":" ++ String.fromInt stats.pressCount
-        ++ ",\"totalPressedTime\":" ++ String.fromFloat stats.totalPressedTime
-        ++ ",\"totalReleasedTime\":" ++ String.fromFloat stats.totalReleasedTime
-        ++ ",\"events\":[" ++ eventsStr ++ "]"
-        ++ "}"
-
-
-eventToJsonString : Event -> String
-eventToJsonString event =
-    let
-        stateStr = case event.state of
-            Pressed -> "\"pressed\""
-            Released -> "\"released\""
-    in
-    "{"
-        ++ "\"startX\":" ++ String.fromFloat event.startX
-        ++ ",\"length\":" ++ String.fromFloat event.length
-        ++ ",\"duration\":" ++ String.fromFloat (event.length / 10)
-        ++ ",\"state\":" ++ stateStr
-        ++ "}"
-
-
-gridBackground : Float -> List (Svg Msg)
-gridBackground totalPixels =
-    let
-        gridSpacing = 10  -- One line every 10 pixels (1 second)
-        maxLines = ceiling (totalPixels / gridSpacing)
-        linePositions = List.range 0 maxLines
-    in
-    List.map (\i ->
-        let
-            xPos = toFloat i * gridSpacing
-        in
-        line
-            [ SvgA.x1 (String.fromFloat xPos)
-            , SvgA.y1 (String.fromInt config.timelineYStart)
-            , SvgA.x2 (String.fromFloat xPos)
-            , SvgA.y2 (String.fromInt (config.timelineYStart + config.timelineHeight))
-            , SvgA.stroke "#e0e0e0"
-            , SvgA.strokeWidth "1"
-            , SvgA.opacity "0.5"
-            ] []
-    ) linePositions
-
-
-timeAxisMarkers : Float -> List (Svg Msg)
-timeAxisMarkers totalPixels =
-    let
-        pixelsPerSecond = 10
-        maxSeconds = ceiling (totalPixels / pixelsPerSecond)
-        secondMarkers = List.range 0 maxSeconds
-    in
-    List.concatMap (\sec ->
-        let
-            xPos = toFloat sec * pixelsPerSecond
-        in
-        [ line
-            [ SvgA.x1 (String.fromFloat xPos)
-            , SvgA.y1 (String.fromInt config.timeAxisY)
-            , SvgA.x2 (String.fromFloat xPos)
-            , SvgA.y2 (String.fromInt (config.timeAxisY + config.timeAxisTickHeight))
-            , SvgA.stroke "#666"
-            , SvgA.strokeWidth "1"
-            ] []
-        , svgText
-            [ SvgA.x (String.fromFloat xPos)
-            , SvgA.y (String.fromInt config.timeAxisLabelY)
-            , SvgA.fontSize "12"
-            , SvgA.textAnchor "middle"
-            , SvgA.fill "#666"
-            ]
-            [ Svg.text (String.fromInt sec ++ "s") ]
-        ]
-    ) secondMarkers
-
-
--- View
-
-view : Model -> Html Msg
-view model =
-    let
-        totalPixels = getTotalTimePixels model
-        totalSeconds = getTotalTimeSeconds model
-        svgWidth = max config.minSvgWidth (totalPixels + config.svgPadding)
-        stats = calculateStatistics model.events
-
-        recordingIndicator =
-            if model.recording then
-                div
-                    [ style "display" "inline-block"
-                    , style "margin-left" "10px"
-                    , style "color" "red"
-                    , style "font-weight" "bold"
-                    , attribute "aria-live" "polite"
-                    ]
-                    [ text "⬤ RECORDING" ]
-            else
-                div
-                    [ style "display" "inline-block"
-                    , style "margin-left" "10px"
-                    , style "color" "#999"
-                    , attribute "aria-live" "polite"
-                    ]
-                    [ text "○ Not Recording" ]
-
-        buttonColor =
-            case model.currentState of
-                Pressed -> "#2196F3"
-                Released -> "#4CAF50"
-    in
-    div [ style "padding" "20px", style "font-family" "sans-serif" ]
-        [ h1 [] [ text "Press Plotter" ]
-        , p [] [ text "Visualize button press patterns over time" ]
-        , p [ style "font-size" "14px", style "color" "#666" ] [ text "💡 Tip: Use spacebar to press/release, or click the button" ]
-        , div [ style "margin" "20px 0" ]
-            [ button
-                [ onClick StartRecording
-                , style "margin-right" "10px"
-                , style "padding" "10px 20px"
-                , attribute "aria-label" "Start recording button presses"
-                ]
-                [ text "Start Recording" ]
-            , button
-                [ onClick StopRecording
-                , style "margin-right" "10px"
-                , style "padding" "10px 20px"
-                , attribute "aria-label" "Stop recording button presses"
-                ]
-                [ text "Stop Recording" ]
-            , button
-                [ onClick ClearRecording
-                , style "margin-right" "10px"
-                , style "padding" "10px 20px"
-                , style "background-color" "#ff9800"
-                , style "color" "white"
-                , style "border" "none"
-                , attribute "aria-label" "Clear the recorded pattern"
-                ]
-                [ text "Clear" ]
-            , button
-                [ onMouseDown (SetButtonState Pressed)
-                , onMouseUp (SetButtonState Released)
-                , style "padding" "10px 20px"
-                , style "background-color" buttonColor
-                , style "color" "white"
-                , style "border" "none"
-                , style "cursor" "pointer"
-                , style "transition" "background-color 0.15s ease"
-                , attribute "aria-label" "Hold to record button press"
-                , attribute "aria-pressed" (if model.currentState == Pressed then "true" else "false")
-                ]
-                [ text "Hold Me to Record Press" ]
-            , recordingIndicator
-            ]
-        , div [ style "margin" "20px 0" ]
-            [ div [ style "display" "inline-block", style "margin-right" "20px" ]
-                [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "blue", style "margin-right" "5px", style "vertical-align" "middle" ] []
-                , text "Pressed"
-                ]
-            , div [ style "display" "inline-block", style "margin-right" "20px" ]
-                [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "green", style "margin-right" "5px", style "vertical-align" "middle" ] []
-                , text "Released"
-                ]
-            , div [ style "display" "inline-block", style "font-weight" "bold" ]
-                [ text ("Duration: " ++ String.fromFloat totalSeconds ++ "s") ]
-            , button
-                [ onClick ExportData
-                , style "margin-left" "20px"
-                , style "padding" "5px 15px"
-                , style "background-color" "#9c27b0"
-                , style "color" "white"
-                , style "border" "none"
-                , style "cursor" "pointer"
-                , attribute "aria-label" "Export data to console"
-                ]
-                [ text "📊 Export Data" ]
-            ]
-        , statisticsPanel stats
-        , div [ style "overflow-x" "auto", style "margin" "20px 0" ]
-            [ svg
-                [ SvgA.width (String.fromFloat svgWidth)
-                , SvgA.height (String.fromInt config.svgHeight)
-                , SvgA.style "border: 1px solid #ccc; background-color: #f9f9f9;"
-                , attribute "role" "img"
-                , attribute "aria-label" ("Press pattern timeline showing " ++ String.fromFloat totalSeconds ++ " seconds of recording")
-                ]
-                (gridBackground totalPixels ++ List.concatMap eventToRectangles model.events ++ [currentRectangle model] ++ timeAxisMarkers totalPixels)
-            ]
-        ]
-
-
-statisticsPanel : Statistics -> Html Msg
-statisticsPanel stats =
-    div
-        [ style "margin" "20px 0"
-        , style "padding" "15px"
-        , style "background-color" "#f5f5f5"
-        , style "border-radius" "8px"
-        , style "border" "1px solid #ddd"
-        ]
-        [ h2 [ style "margin-top" "0", style "font-size" "18px" ] [ text "📈 Statistics" ]
-        , div [ style "display" "grid", style "grid-template-columns" "repeat(auto-fit, minmax(200px, 1fr))", style "gap" "15px" ]
-            [ statCard "Press Count" (String.fromInt stats.pressCount) "blue"
-            , statCard "Total Pressed" (formatTime stats.totalPressedTime) "blue"
-            , statCard "Total Released" (formatTime stats.totalReleasedTime) "green"
-            , statCard "Avg Press Duration" (formatTime stats.averagePressTime) "blue"
-            , statCard "Avg Release Duration" (formatTime stats.averageReleaseTime) "green"
-            ]
-        ]
-
-
-statCard : String -> String -> String -> Html Msg
-statCard label value color =
-    div
-        [ style "padding" "10px"
-        , style "background-color" "white"
-        , style "border-radius" "4px"
-        , style "border-left" ("4px solid " ++ color)
-        ]
-        [ div [ style "font-size" "12px", style "color" "#666", style "margin-bottom" "5px" ] [ text label ]
-        , div [ style "font-size" "20px", style "font-weight" "bold", style "color" "#333" ] [ text value ]
-        ]
 
 
 formatTime : Float -> String
 formatTime seconds =
-    if seconds < 1 then
-        String.fromInt (round (seconds * 1000)) ++ "ms"
-    else
-        String.fromFloat (toFloat (round (seconds * 100)) / 100) ++ "s"
+    let
+        mins =
+            floor seconds // 60
+
+        secs =
+            modBy 60 (floor seconds)
+
+        ms =
+            floor ((seconds - toFloat (floor seconds)) * 100)
+    in
+    String.padLeft 2 '0' (String.fromInt mins)
+        ++ ":"
+        ++ String.padLeft 2 '0' (String.fromInt secs)
+        ++ "."
+        ++ String.padLeft 2 '0' (String.fromInt ms)
 
 
-eventToRectangles : Event -> List (Svg Msg)
-eventToRectangles event =
-    [ rect
-        [ SvgA.x (String.fromFloat event.startX)
-        , SvgA.y (String.fromInt config.timelineYStart)
-        , SvgA.width (String.fromFloat event.length)
-        , SvgA.height (String.fromInt config.timelineHeight)
-        , SvgA.fill (getColorForState event.state)
-        , SvgA.opacity "0.9"
-        ]
-        []
-    ]
+encodeModelData : Model -> Encode.Value
+encodeModelData model =
+    let
+        allEvents =
+            if model.recording then
+                finalizeCurrentEvent model |> .events
 
+            else
+                model.events
 
-currentRectangle : Model -> Svg Msg
-currentRectangle model =
-    case (model.currentStart, model.lastTime) of
-        (Just start, Just lastTime) ->
-            let
-                elapsed = calculateElapsedPixels start lastTime
-                color = getColorForState model.currentState
-            in
-            rect
-                [ SvgA.x (String.fromFloat (getEventsWidth model.events))
-                , SvgA.y (String.fromInt config.timelineYStart)
-                , SvgA.width (String.fromFloat elapsed)
-                , SvgA.height (String.fromInt config.timelineHeight)
-                , SvgA.fill color
-                , SvgA.opacity "0.7"
+        encodeButtonState state =
+            case state of
+                Pressed ->
+                    Encode.string "pressed"
+
+                Released ->
+                    Encode.string "released"
+
+        encodeEvent event =
+            Encode.object
+                [ ( "startTime", Encode.float (pixelsToTime model.pixelsPerSecond event.startX) )
+                , ( "duration", Encode.float (pixelsToTime model.pixelsPerSecond event.length) )
+                , ( "state", encodeButtonState event.state )
                 ]
-                []
+    in
+    Encode.object
+        [ ( "totalDuration", Encode.float model.elapsedTime )
+        , ( "events", Encode.list encodeEvent allEvents )
+        , ( "statistics", encodeStatistics (calculateStatistics model) )
+        ]
 
-        _ ->
-            rect [] []
+
+encodeStatistics : Statistics -> Encode.Value
+encodeStatistics stats =
+    Encode.object
+        [ ( "pressCount", Encode.int stats.pressCount )
+        , ( "releaseCount", Encode.int stats.releaseCount )
+        , ( "totalPressTime", Encode.float stats.totalPressTime )
+        , ( "totalReleaseTime", Encode.float stats.totalReleaseTime )
+        , ( "averagePressTime", Encode.float stats.averagePressTime )
+        , ( "averageReleaseTime", Encode.float stats.averageReleaseTime )
+        ]
 
 
--- Subscriptions
-
-keyDecoder : (String -> Msg) -> Decode.Decoder Msg
-keyDecoder toMsg =
-    Decode.map toMsg (Decode.field "key" Decode.string)
+-- SUBSCRIPTIONS
 
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Sub.batch
-        [ every (toFloat config.tickIntervalMs) Tick
-        , onKeyDown (keyDecoder KeyPressed)
-        , onKeyUp (keyDecoder KeyReleased)
+        [ if model.recording then
+            Time.every (toFloat config.tickInterval) Tick
+
+          else
+            Sub.none
+        , Browser.Events.onKeyDown keyDecoder
+        , Browser.Events.onKeyUp keyUpDecoder
+        , userScrolledLeft (\_ -> UserScrolledLeft)
         ]
 
 
--- Init
+keyDecoder : Decode.Decoder Msg
+keyDecoder =
+    Decode.field "key" Decode.string
+        |> Decode.andThen
+            (\key ->
+                if key == " " then
+                    Decode.succeed ButtonDown
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( initialModel, Cmd.none )
+                else
+                    Decode.fail "Not space"
+            )
 
 
--- Main
+keyUpDecoder : Decode.Decoder Msg
+keyUpDecoder =
+    Decode.field "key" Decode.string
+        |> Decode.andThen
+            (\key ->
+                if key == " " then
+                    Decode.succeed ButtonUp
 
-main =
-    Browser.element
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
-        , view = view
-        }
+                else
+                    Decode.fail "Not space"
+            )
+
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    div
+        [ style "font-family" "Arial, sans-serif"
+        , style "padding" "20px"
+        , style "max-width" "100%"
+        ]
+        [ h1 [] [ Html.text "Press Plotter" ]
+        , viewControls model
+        , viewStatistics model
+        , viewTimeline model
+        , viewRecordButton model
+        ]
+
+
+viewControls : Model -> Html Msg
+viewControls model =
+    div [ style "margin-bottom" "20px" ]
+        [ if not model.recording then
+            button
+                [ onClick StartRecording
+                , style "padding" "10px 20px"
+                , style "margin-right" "10px"
+                , style "font-size" "16px"
+                , style "cursor" "pointer"
+                , attribute "aria-label" "Start recording button presses"
+                ]
+                [ Html.text "Start Recording" ]
+
+          else
+            button
+                [ onClick StopRecording
+                , style "padding" "10px 20px"
+                , style "margin-right" "10px"
+                , style "font-size" "16px"
+                , style "cursor" "pointer"
+                , style "background-color" "#e74c3c"
+                , style "color" "white"
+                , style "border" "none"
+                , attribute "aria-label" "Stop recording button presses"
+                ]
+                [ Html.text "Stop Recording" ]
+        , button
+            [ onClick ClearEvents
+            , style "padding" "10px 20px"
+            , style "margin-right" "10px"
+            , style "font-size" "16px"
+            , style "cursor" "pointer"
+            , disabled (not model.recording && List.isEmpty model.events)
+            , attribute "aria-label" "Clear all recorded events"
+            ]
+            [ Html.text "Clear" ]
+        , button
+            [ onClick ExportData
+            , style "padding" "10px 20px"
+            , style "margin-right" "10px"
+            , style "font-size" "16px"
+            , style "cursor" "pointer"
+            , disabled (List.isEmpty model.events && not model.recording)
+            , attribute "aria-label" "Export recording data to console"
+            ]
+            [ Html.text "Export Data" ]
+        , span
+            [ style "margin-left" "10px"
+            , style "margin-right" "10px"
+            , style "color" "#666"
+            ]
+            [ Html.text "Zoom:" ]
+        , button
+            [ onClick ZoomOut
+            , style "padding" "10px 15px"
+            , style "margin-right" "5px"
+            , style "font-size" "16px"
+            , style "cursor" "pointer"
+            , disabled (model.pixelsPerSecond <= config.minPixelsPerSecond)
+            , attribute "aria-label" "Zoom out timeline"
+            ]
+            [ Html.text "-" ]
+        , span
+            [ style "margin-right" "5px"
+            , style "font-size" "14px"
+            , style "color" "#666"
+            ]
+            [ Html.text (String.fromInt (round model.pixelsPerSecond) ++ "px/s") ]
+        , button
+            [ onClick ZoomIn
+            , style "padding" "10px 15px"
+            , style "margin-right" "20px"
+            , style "font-size" "16px"
+            , style "cursor" "pointer"
+            , disabled (model.pixelsPerSecond >= config.maxPixelsPerSecond)
+            , attribute "aria-label" "Zoom in timeline"
+            ]
+            [ Html.text "+" ]
+        , button
+            [ onClick ToggleAutoScroll
+            , style "padding" "10px 15px"
+            , style "font-size" "14px"
+            , style "cursor" "pointer"
+            , style "background-color" (if model.autoScroll then "#3498db" else "#95a5a6")
+            , style "color" "white"
+            , style "border" "none"
+            , style "border-radius" "4px"
+            , attribute "aria-label" "Toggle auto-scroll"
+            ]
+            [ Html.text (if model.autoScroll then "Auto-scroll: ON" else "Auto-scroll: OFF") ]
+        , if model.recording then
+            span
+                [ style "margin-left" "20px"
+                , style "padding" "5px 12px"
+                , style "background-color" "#fee"
+                , style "color" "#c0392b"
+                , style "font-weight" "bold"
+                , style "border-radius" "4px"
+                , style "border" "1px solid #e74c3c"
+                , style "font-size" "14px"
+                , attribute "role" "status"
+                , attribute "aria-live" "polite"
+                ]
+                [ Html.text "REC" ]
+
+          else
+            Html.text ""
+        ]
+
+
+viewStatistics : Model -> Html Msg
+viewStatistics model =
+    let
+        stats =
+            calculateStatistics model
+
+        fractionPressed =
+            if model.elapsedTime > 0 then
+                (stats.totalPressTime / model.elapsedTime) * 100
+
+            else
+                0
+    in
+    div
+        [ style "margin-bottom" "20px"
+        , style "padding" "15px"
+        , style "background-color" "#f5f5f5"
+        , style "border-radius" "5px"
+        , attribute "role" "region"
+        , attribute "aria-label" "Recording statistics"
+        ]
+        [ h3 [ style "margin-top" "0" ] [ Html.text "Statistics" ]
+        , div [ style "display" "grid", style "grid-template-columns" "repeat(3, 1fr)", style "gap" "10px" ]
+            [ viewStatItem "Press Count" (String.fromInt stats.pressCount)
+            , viewStatItem "Release Count" (String.fromInt stats.releaseCount)
+            , viewStatItem "Total Duration" (formatTime model.elapsedTime)
+            , viewStatItem "Total Press Time" (formatTime stats.totalPressTime)
+            , viewStatItem "Total Release Time" (formatTime stats.totalReleaseTime)
+            , viewStatItem "Fraction Pressed" (String.fromFloat (toFloat (round (fractionPressed * 10)) / 10) ++ "%")
+            , viewStatItem "Avg Press Duration" (formatTime stats.averagePressTime)
+            , viewStatItem "Avg Release Duration" (formatTime stats.averageReleaseTime)
+            , Html.text ""
+            ]
+        ]
+
+
+viewStatItem : String -> String -> Html Msg
+viewStatItem label value =
+    div []
+        [ div [ style "font-size" "12px", style "color" "#666" ] [ Html.text label ]
+        , div [ style "font-size" "18px", style "font-weight" "bold" ] [ Html.text value ]
+        ]
+
+
+viewTimeline : Model -> Html Msg
+viewTimeline model =
+    let
+        currentWidth =
+            timeToPixels model.pixelsPerSecond model.elapsedTime
+
+        totalWidth =
+            max 1000 (currentWidth + 100)
+
+        currentEvent =
+            if model.recording then
+                let
+                    eventLength =
+                        timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
+                in
+                [ { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
+                  , length = eventLength
+                  , state = model.buttonState
+                  }
+                ]
+
+            else
+                []
+
+        allEvents =
+            model.events ++ currentEvent
+    in
+    div
+        [ attribute "id" "timeline-container"
+        , style "margin-bottom" "20px"
+        , style "overflow-x" "auto"
+        , style "border" "1px solid #ccc"
+        , style "background-color" "white"
+        , attribute "role" "img"
+        , attribute "aria-label" "Timeline visualization of button presses"
+        ]
+        [ svg
+            [ SvgAttr.width (String.fromFloat totalWidth)
+            , SvgAttr.height (String.fromInt config.svgHeight)
+            , SvgAttr.style "display: block;"
+            ]
+            (viewGrid totalWidth ++ viewSecondMarkers model.pixelsPerSecond totalWidth ++ viewEvents allEvents)
+        , div
+            [ style "padding" "5px 10px"
+            , style "background-color" "#f9f9f9"
+            , style "border-top" "1px solid #ccc"
+            , style "font-size" "14px"
+            ]
+            [ Html.text ("Duration: " ++ formatTime model.elapsedTime) ]
+        ]
+
+
+viewGrid : Float -> List (Svg Msg)
+viewGrid totalWidth =
+    let
+        numLines =
+            ceiling (totalWidth / toFloat config.gridSpacing)
+
+        verticalLines =
+            List.range 0 numLines
+                |> List.map
+                    (\i ->
+                        line
+                            [ SvgAttr.x1 (String.fromInt (i * config.gridSpacing))
+                            , SvgAttr.y1 "0"
+                            , SvgAttr.x2 (String.fromInt (i * config.gridSpacing))
+                            , SvgAttr.y2 (String.fromInt config.svgHeight)
+                            , SvgAttr.stroke config.gridColor
+                            , SvgAttr.strokeWidth "1"
+                            ]
+                            []
+                    )
+
+        horizontalLines =
+            List.range 0 (config.svgHeight // config.gridSpacing)
+                |> List.map
+                    (\i ->
+                        line
+                            [ SvgAttr.x1 "0"
+                            , SvgAttr.y1 (String.fromInt (i * config.gridSpacing))
+                            , SvgAttr.x2 (String.fromFloat totalWidth)
+                            , SvgAttr.y2 (String.fromInt (i * config.gridSpacing))
+                            , SvgAttr.stroke config.gridColor
+                            , SvgAttr.strokeWidth "1"
+                            ]
+                            []
+                    )
+    in
+    verticalLines ++ horizontalLines
+
+
+viewSecondMarkers : Float -> Float -> List (Svg Msg)
+viewSecondMarkers pixelsPerSecond totalWidth =
+    let
+        numSeconds =
+            ceiling (totalWidth / pixelsPerSecond)
+
+        pps =
+            round pixelsPerSecond
+    in
+    List.range 0 numSeconds
+        |> List.map
+            (\i ->
+                g []
+                    [ line
+                        [ SvgAttr.x1 (String.fromInt (i * pps))
+                        , SvgAttr.y1 "0"
+                        , SvgAttr.x2 (String.fromInt (i * pps))
+                        , SvgAttr.y2 (String.fromInt config.secondMarkerHeight)
+                        , SvgAttr.stroke config.secondMarkerColor
+                        , SvgAttr.strokeWidth "2"
+                        ]
+                        []
+                    , text_
+                        [ SvgAttr.x (String.fromInt (i * pps + 5))
+                        , SvgAttr.y "15"
+                        , SvgAttr.fontSize "12"
+                        , SvgAttr.fill config.secondMarkerColor
+                        ]
+                        [ Svg.text (String.fromInt i ++ "s") ]
+                    ]
+            )
+
+
+viewEvents : List Event -> List (Svg Msg)
+viewEvents events =
+    events
+        |> List.map
+            (\event ->
+                rect
+                    [ SvgAttr.x (String.fromFloat event.startX)
+                    , SvgAttr.y (String.fromInt ((config.svgHeight - config.eventHeight) // 2))
+                    , SvgAttr.width (String.fromFloat event.length)
+                    , SvgAttr.height (String.fromInt config.eventHeight)
+                    , SvgAttr.fill
+                        (case event.state of
+                            Pressed ->
+                                config.pressEventColor
+
+                            Released ->
+                                config.releaseEventColor
+                        )
+                    , SvgAttr.opacity "0.7"
+                    ]
+                    []
+            )
+
+
+viewRecordButton : Model -> Html Msg
+viewRecordButton model =
+    div []
+        [ button
+            [ Html.Events.custom "mousedown"
+                (Decode.succeed
+                    { message = ButtonDown
+                    , stopPropagation = True
+                    , preventDefault = True
+                    }
+                )
+            , Html.Events.custom "mouseup"
+                (Decode.succeed
+                    { message = ButtonUp
+                    , stopPropagation = True
+                    , preventDefault = True
+                    }
+                )
+            , style "padding" "20px 40px"
+            , style "font-size" "18px"
+            , style "cursor" "pointer"
+            , style "background-color"
+                (case model.buttonState of
+                    Pressed ->
+                        config.buttonPressedColor
+
+                    Released ->
+                        config.buttonReleasedColor
+                )
+            , style "color" "white"
+            , style "border" "none"
+            , style "border-radius" "5px"
+            , style "user-select" "none"
+            , disabled (not model.recording)
+            , attribute "aria-label" "Hold to record press, release to record release"
+            , attribute "aria-pressed"
+                (case model.buttonState of
+                    Pressed ->
+                        "true"
+
+                    Released ->
+                        "false"
+                )
+            ]
+            [ Html.text "Hold Me to Record Press" ]
+        , div
+            [ style "margin-top" "10px"
+            , style "font-size" "14px"
+            , style "color" "#666"
+            ]
+            [ Html.text "Tip: You can also use the spacebar to press/release" ]
+        ]

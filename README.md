@@ -11,11 +11,13 @@ A web application that visualizes button press patterns over time.
 - **Duration display** showing total recording time
 - **Recording indicator** to show active recording status
 - **Clear button** to reset visualization without stopping
-- **High resolution** tracking (100ms intervals)
+- **Ultra-high precision** tracking (millisecond-accurate timestamps for detecting extremely rapid presses)
 - **Visual feedback** on button press with color change
 - **Keyboard support** - Use spacebar to press/release
-- **Statistics panel** - Real-time metrics (press count, averages, totals)
-- **Data export** - Export recordings as JSON to browser console
+- **Statistics panel** - Real-time metrics (press count, averages, totals, fraction pressed)
+- **Data export** - Export recordings as downloadable JSON file
+- **Zoom controls** - Adjust timeline scale (10-800 pixels per second) for detailed or overview viewing
+- **Auto-scroll** - Keeps timeline scrolled to show latest activity (toggleable, auto-disables on manual scroll)
 
 ## What it does
 
@@ -29,11 +31,14 @@ Press Plotter allows you to record and visualize when a button is pressed and re
 2. **Hold down** the "Hold Me to Record Press" button to record a press event (button turns blue when pressed)
 3. **Release** the button to record a release event (button returns to green)
 4. Repeat pressing and releasing to create a pattern
-5. Watch the timeline grow with color-coded segments
-6. Click **"Clear"** to reset the visualization while keeping recording active
-7. Click **"Stop Recording"** to end the session
+5. Watch the timeline grow with color-coded segments (auto-scrolls to show latest by default)
+6. Use **Zoom +/−** buttons to adjust the timeline scale for more detail or overview
+7. Toggle **"Auto-scroll"** to control whether timeline follows latest activity (scrolling left auto-disables it)
+8. Click **"Clear"** to reset the visualization while keeping recording active
+9. Click **"Export Data"** to download recording as JSON
+10. Click **"Stop Recording"** to end the session
 
-The timeline updates in real-time every 100ms as you press and release the button, creating a visual representation of your press pattern. The timeline automatically scrolls horizontally for longer recordings.
+The timeline updates in real-time (approximately every 10ms) as you press and release the button, creating a visual representation of your press pattern with millisecond-accurate timing. All time measurements use system timestamps for precision timing regardless of display update rate. The timeline automatically scrolls horizontally for longer recordings. The default scale is 50 pixels per second, but you can zoom in (up to 800px/s for extreme detail) or zoom out (down to 10px/s for a compact overview) using the zoom controls.
 
 ## Development
 

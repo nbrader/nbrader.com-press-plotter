@@ -13,6 +13,59 @@
         var app = Elm.Main.init({
             node: document.getElementById('elm-main')
         });
+
+        // Prevent spacebar from triggering focused buttons
+        document.addEventListener('keydown', function(e) {
+            if (e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+            }
+        });
+
+        // Handle auto-scroll to end of timeline
+        var lastScrollLeft = 0;
+        app.ports.scrollTimelineToEnd.subscribe(function() {
+            var container = document.getElementById('timeline-container');
+            if (container) {
+                container.scrollLeft = container.scrollWidth;
+                lastScrollLeft = container.scrollLeft;
+            }
+        });
+
+        // Detect when user manually scrolls left
+        setTimeout(function() {
+            var container = document.getElementById('timeline-container');
+            if (container) {
+                container.addEventListener('scroll', function() {
+                    // If user scrolled left (not at the rightmost position)
+                    if (container.scrollLeft < container.scrollWidth - container.clientWidth - 10) {
+                        // Only send if we scrolled left from a previous position
+                        if (container.scrollLeft < lastScrollLeft) {
+                            app.ports.userScrolledLeft.send(null);
+                        }
+                    }
+                    lastScrollLeft = container.scrollLeft;
+                });
+            }
+        }, 100);
+
+        // Handle export - both log to console and download as file
+        app.ports.exportToConsole.subscribe(function(data) {
+            console.log('Press Plotter Data:', data);
+
+            // Create a downloadable JSON file
+            var dataStr = JSON.stringify(data, null, 2);
+            var dataBlob = new Blob([dataStr], {type: 'application/json'});
+            var url = URL.createObjectURL(dataBlob);
+            var link = document.createElement('a');
+            link.href = url;
+            link.download = 'press-plotter-data-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            alert('Data exported! Check your downloads folder for the JSON file.');
+        });
     </script>
 </body>
 </html>
