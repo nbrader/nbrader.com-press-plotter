@@ -1,9 +1,10 @@
 module Main exposing (..)
 
 import Browser
-import Html exposing (Html, button, div, text)
-import Html.Events exposing (onClick)
-import Svg exposing (Svg, svg, rect)
+import Html exposing (Html, button, div, text, h1, p)
+import Html.Attributes exposing (style)
+import Html.Events exposing (onClick, onMouseDown, onMouseUp)
+import Svg exposing (Svg, svg, rect, text as svgText)
 import Svg.Attributes as SvgA
 import Time exposing (Posix, every, now)
 import Task exposing (Task)
@@ -90,11 +91,26 @@ update msg model =
 
 view : Model -> Html Msg
 view model =
-    div []
-        [ button [ onClick StartRecording ] [ text "Start" ]
-        , button [ onClick StopRecording ] [ text "Stop" ]
-        , button [ onClick (SetValue 1) ] [ text "Press Me" ]
-        , svg [ SvgA.width "800", SvgA.height "400" ]
+    div [ style "padding" "20px", style "font-family" "sans-serif" ]
+        [ h1 [] [ text "Press Plotter" ]
+        , p [] [ text "Visualize button press patterns over time" ]
+        , div [ style "margin" "20px 0" ]
+            [ button [ onClick StartRecording, style "margin-right" "10px", style "padding" "10px 20px" ] [ text "Start Recording" ]
+            , button [ onClick StopRecording, style "margin-right" "10px", style "padding" "10px 20px" ] [ text "Stop Recording" ]
+            , button [ onMouseDown (SetValue 1), onMouseUp (SetValue 0), style "padding" "10px 20px", style "background-color" "#4CAF50", style "color" "white", style "border" "none", style "cursor" "pointer" ]
+                [ text "Hold Me to Record Press" ]
+            ]
+        , div [ style "margin" "20px 0" ]
+            [ div [ style "display" "inline-block", style "margin-right" "20px" ]
+                [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "blue", style "margin-right" "5px", style "vertical-align" "middle" ] []
+                , text "Pressed"
+                ]
+            , div [ style "display" "inline-block" ]
+                [ div [ style "display" "inline-block", style "width" "20px", style "height" "20px", style "background-color" "green", style "margin-right" "5px", style "vertical-align" "middle" ] []
+                , text "Released"
+                ]
+            ]
+        , svg [ SvgA.width "800", SvgA.height "400", SvgA.style "border: 1px solid #ccc; background-color: #f9f9f9;" ]
             (List.concatMap eventToRectangles model.events ++ [currentRectangle model])
         ]
 
