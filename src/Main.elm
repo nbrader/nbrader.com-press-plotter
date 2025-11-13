@@ -66,7 +66,7 @@ update msg model =
                             (Just lastTime, Just currentStart) ->
                                 let
                                     elapsed = (toFloat (Time.posixToMillis lastTime - Time.posixToMillis currentStart)) / 500
-                                    newEvent = { startX = sum (List.map .length model.events), length = elapsed, color = if value == 1 then "blue" else "green" }
+                                    newEvent = { startX = sum (List.map .length model.events), length = elapsed, color = if model.currentValue == 1 then "blue" else "green" }
                                 in
                                 (newEvent :: model.events, Just lastTime)
 
