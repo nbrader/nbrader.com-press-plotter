@@ -37,6 +37,15 @@ The timeline updates in real-time every 100ms as you press and release the butto
 
 - Elm 0.19.1
 
+### Code Quality
+
+The codebase follows best practices:
+- **Type Safety**: Uses custom `ButtonState` type instead of primitive values
+- **Named Constants**: All magic numbers extracted to `config` record
+- **Helper Functions**: Reusable functions for calculations (no duplication)
+- **Accessibility**: ARIA labels and semantic HTML throughout
+- **Performance**: Optimized calculations with helper functions
+
 ### Building
 
 ```bash
@@ -47,3 +56,11 @@ elm make src/Main.elm --output=press-plotter.min.js --optimize
 ### Running
 
 Open `PressPlotter.html` in a web browser.
+
+## Code Architecture
+
+- **Model**: Stores events, recording state, and current button state
+- **ButtonState**: Custom type (`Pressed | Released`) for type-safe state management
+- **Event**: Records with startX position, length (in pixels), and button state
+- **Config**: Centralized constants for all timing and layout values
+- **Helper Functions**: Pure functions for time calculations and rendering
