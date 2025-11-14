@@ -5910,6 +5910,12 @@ var $author$project$Main$subscriptions = function (model) {
 				})
 			]));
 };
+var $author$project$Main$ButtonDownAt = function (a) {
+	return {$: 'ButtonDownAt', a: a};
+};
+var $author$project$Main$ButtonUpAt = function (a) {
+	return {$: 'ButtonUpAt', a: a};
+};
 var $author$project$Main$Pressed = {$: 'Pressed'};
 var $elm$core$List$filter = F2(
 	function (isGood, list) {
@@ -6118,8 +6124,21 @@ var $author$project$Main$update = F2(
 						{buttonState: $author$project$Main$Released, currentEventStartTime: 0, elapsedTime: 0, events: _List_Nil}),
 					$elm$core$Platform$Cmd$none);
 			case 'ButtonDown':
+				return _Utils_Tuple2(
+					model,
+					A2($elm$core$Task$perform, $author$project$Main$ButtonDownAt, $elm$time$Time$now));
+			case 'ButtonUp':
+				return _Utils_Tuple2(
+					model,
+					A2($elm$core$Task$perform, $author$project$Main$ButtonUpAt, $elm$time$Time$now));
+			case 'ButtonDownAt':
+				var posix = msg.a;
 				if (model.recording && _Utils_eq(model.buttonState, $author$project$Main$Released)) {
-					var eventLength = A2($author$project$Main$timeToPixels, model.pixelsPerSecond, model.elapsedTime - model.currentEventStartTime);
+					var currentTimeMillis = $elm$time$Time$posixToMillis(posix);
+					var _v1 = (!model.recordingStartTime) ? _Utils_Tuple2(currentTimeMillis, 0) : _Utils_Tuple2(model.recordingStartTime, (currentTimeMillis - model.recordingStartTime) / 1000);
+					var startTime = _v1.a;
+					var currentElapsed = _v1.b;
+					var eventLength = A2($author$project$Main$timeToPixels, model.pixelsPerSecond, currentElapsed - model.currentEventStartTime);
 					var newEvent = {
 						length: eventLength,
 						startX: A2($author$project$Main$timeToPixels, model.pixelsPerSecond, model.currentEventStartTime),
@@ -6130,19 +6149,26 @@ var $author$project$Main$update = F2(
 							model,
 							{
 								buttonState: $author$project$Main$Pressed,
-								currentEventStartTime: model.elapsedTime,
+								currentEventStartTime: currentElapsed,
+								elapsedTime: currentElapsed,
 								events: _Utils_ap(
 									model.events,
 									_List_fromArray(
-										[newEvent]))
+										[newEvent])),
+								recordingStartTime: startTime
 							}),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
-			case 'ButtonUp':
+			case 'ButtonUpAt':
+				var posix = msg.a;
 				if (model.recording && _Utils_eq(model.buttonState, $author$project$Main$Pressed)) {
-					var eventLength = A2($author$project$Main$timeToPixels, model.pixelsPerSecond, model.elapsedTime - model.currentEventStartTime);
+					var currentTimeMillis = $elm$time$Time$posixToMillis(posix);
+					var _v2 = (!model.recordingStartTime) ? _Utils_Tuple2(currentTimeMillis, 0) : _Utils_Tuple2(model.recordingStartTime, (currentTimeMillis - model.recordingStartTime) / 1000);
+					var startTime = _v2.a;
+					var currentElapsed = _v2.b;
+					var eventLength = A2($author$project$Main$timeToPixels, model.pixelsPerSecond, currentElapsed - model.currentEventStartTime);
 					var newEvent = {
 						length: eventLength,
 						startX: A2($author$project$Main$timeToPixels, model.pixelsPerSecond, model.currentEventStartTime),
@@ -6153,11 +6179,13 @@ var $author$project$Main$update = F2(
 							model,
 							{
 								buttonState: $author$project$Main$Released,
-								currentEventStartTime: model.elapsedTime,
+								currentEventStartTime: currentElapsed,
+								elapsedTime: currentElapsed,
 								events: _Utils_ap(
 									model.events,
 									_List_fromArray(
-										[newEvent]))
+										[newEvent])),
+								recordingStartTime: startTime
 							}),
 						$elm$core$Platform$Cmd$none);
 				} else {
@@ -6168,9 +6196,9 @@ var $author$project$Main$update = F2(
 				if (model.recording) {
 					var currentTimeMillis = $elm$time$Time$posixToMillis(posix);
 					var cmd = model.autoScroll ? $author$project$Main$scrollTimelineToEnd(_Utils_Tuple0) : $elm$core$Platform$Cmd$none;
-					var _v1 = (!model.recordingStartTime) ? _Utils_Tuple2(currentTimeMillis, 0) : _Utils_Tuple2(model.recordingStartTime, (currentTimeMillis - model.recordingStartTime) / 1000);
-					var startTime = _v1.a;
-					var elapsed = _v1.b;
+					var _v3 = (!model.recordingStartTime) ? _Utils_Tuple2(currentTimeMillis, 0) : _Utils_Tuple2(model.recordingStartTime, (currentTimeMillis - model.recordingStartTime) / 1000);
+					var startTime = _v3.a;
+					var elapsed = _v3.b;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6478,6 +6506,16 @@ var $author$project$Main$viewRecordButton = function (model) {
 						'mouseup',
 						$elm$json$Json$Decode$succeed(
 							{message: $author$project$Main$ButtonUp, preventDefault: true, stopPropagation: true})),
+						A2(
+						$elm$html$Html$Events$custom,
+						'touchstart',
+						$elm$json$Json$Decode$succeed(
+							{message: $author$project$Main$ButtonDown, preventDefault: true, stopPropagation: true})),
+						A2(
+						$elm$html$Html$Events$custom,
+						'touchend',
+						$elm$json$Json$Decode$succeed(
+							{message: $author$project$Main$ButtonUp, preventDefault: true, stopPropagation: true})),
 						A2($elm$html$Html$Attributes$style, 'padding', '20px 40px'),
 						A2($elm$html$Html$Attributes$style, 'font-size', '18px'),
 						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
@@ -6496,6 +6534,9 @@ var $author$project$Main$viewRecordButton = function (model) {
 						A2($elm$html$Html$Attributes$style, 'border', 'none'),
 						A2($elm$html$Html$Attributes$style, 'border-radius', '5px'),
 						A2($elm$html$Html$Attributes$style, 'user-select', 'none'),
+						A2($elm$html$Html$Attributes$style, '-webkit-user-select', 'none'),
+						A2($elm$html$Html$Attributes$style, '-webkit-touch-callout', 'none'),
+						A2($elm$html$Html$Attributes$style, 'touch-action', 'manipulation'),
 						$elm$html$Html$Attributes$disabled(!model.recording),
 						A2($elm$html$Html$Attributes$attribute, 'aria-label', 'Hold to record press, release to record release'),
 						A2(

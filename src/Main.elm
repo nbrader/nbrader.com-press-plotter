@@ -9,6 +9,7 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import Svg exposing (Svg, g, line, rect, svg, text, text_)
 import Svg.Attributes as SvgAttr
+import Task
 import Time
 
 
@@ -80,6 +81,8 @@ type Msg
     | ClearEvents
     | ButtonDown
     | ButtonUp
+    | ButtonDownAt Time.Posix
+    | ButtonUpAt Time.Posix
     | Tick Time.Posix
     | ExportData
     | ZoomIn
@@ -168,10 +171,28 @@ update msg model =
             )
 
         ButtonDown ->
+            ( model, Task.perform ButtonDownAt Time.now )
+
+        ButtonUp ->
+            ( model, Task.perform ButtonUpAt Time.now )
+
+        ButtonDownAt posix ->
             if model.recording && model.buttonState == Released then
                 let
+                    currentTimeMillis =
+                        Time.posixToMillis posix
+
+                    ( startTime, currentElapsed ) =
+                        if model.recordingStartTime == 0 then
+                            ( currentTimeMillis, 0 )
+
+                        else
+                            ( model.recordingStartTime
+                            , toFloat (currentTimeMillis - model.recordingStartTime) / 1000
+                            )
+
                     eventLength =
-                        timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
+                        timeToPixels model.pixelsPerSecond (currentElapsed - model.currentEventStartTime)
 
                     newEvent =
                         { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
@@ -181,8 +202,10 @@ update msg model =
                 in
                 ( { model
                     | buttonState = Pressed
-                    , currentEventStartTime = model.elapsedTime
+                    , currentEventStartTime = currentElapsed
                     , events = model.events ++ [ newEvent ]
+                    , elapsedTime = currentElapsed
+                    , recordingStartTime = startTime
                   }
                 , Cmd.none
                 )
@@ -190,11 +213,23 @@ update msg model =
             else
                 ( model, Cmd.none )
 
-        ButtonUp ->
+        ButtonUpAt posix ->
             if model.recording && model.buttonState == Pressed then
                 let
+                    currentTimeMillis =
+                        Time.posixToMillis posix
+
+                    ( startTime, currentElapsed ) =
+                        if model.recordingStartTime == 0 then
+                            ( currentTimeMillis, 0 )
+
+                        else
+                            ( model.recordingStartTime
+                            , toFloat (currentTimeMillis - model.recordingStartTime) / 1000
+                            )
+
                     eventLength =
-                        timeToPixels model.pixelsPerSecond (model.elapsedTime - model.currentEventStartTime)
+                        timeToPixels model.pixelsPerSecond (currentElapsed - model.currentEventStartTime)
 
                     newEvent =
                         { startX = timeToPixels model.pixelsPerSecond model.currentEventStartTime
@@ -204,8 +239,10 @@ update msg model =
                 in
                 ( { model
                     | buttonState = Released
-                    , currentEventStartTime = model.elapsedTime
+                    , currentEventStartTime = currentElapsed
                     , events = model.events ++ [ newEvent ]
+                    , elapsedTime = currentElapsed
+                    , recordingStartTime = startTime
                   }
                 , Cmd.none
                 )
@@ -801,6 +838,20 @@ viewRecordButton model =
                     , preventDefault = True
                     }
                 )
+            , Html.Events.custom "touchstart"
+                (Decode.succeed
+                    { message = ButtonDown
+                    , stopPropagation = True
+                    , preventDefault = True
+                    }
+                )
+            , Html.Events.custom "touchend"
+                (Decode.succeed
+                    { message = ButtonUp
+                    , stopPropagation = True
+                    , preventDefault = True
+                    }
+                )
             , style "padding" "20px 40px"
             , style "font-size" "18px"
             , style "cursor" "pointer"
@@ -816,6 +867,9 @@ viewRecordButton model =
             , style "border" "none"
             , style "border-radius" "5px"
             , style "user-select" "none"
+            , style "-webkit-user-select" "none"
+            , style "-webkit-touch-callout" "none"
+            , style "touch-action" "manipulation"
             , disabled (not model.recording)
             , attribute "aria-label" "Hold to record press, release to record release"
             , attribute "aria-pressed"

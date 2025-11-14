@@ -13,7 +13,8 @@ A web application that visualizes button press patterns over time.
 - **Clear button** to reset visualization without stopping
 - **Ultra-high precision** tracking (millisecond-accurate timestamps for detecting extremely rapid presses)
 - **Visual feedback** on button press with color change
-- **Keyboard support** - Use spacebar to press/release
+- **Keyboard support** - Use spacebar to press/release (desktop)
+- **Touch support** - Works on mobile devices with touch events
 - **Statistics panel** - Real-time metrics (press count, averages, totals, fraction pressed)
 - **Data export** - Export recordings as downloadable JSON file
 - **Zoom controls** - Adjust timeline scale (10-800 pixels per second) for detailed or overview viewing
@@ -38,7 +39,7 @@ Press Plotter allows you to record and visualize when a button is pressed and re
 9. Click **"Export Data"** to download recording as JSON
 10. Click **"Stop Recording"** to end the session
 
-The timeline updates in real-time (approximately every 10ms) as you press and release the button, creating a visual representation of your press pattern with millisecond-accurate timing. All time measurements use system timestamps for precision timing regardless of display update rate. The timeline automatically scrolls horizontally for longer recordings. The default scale is 50 pixels per second, but you can zoom in (up to 800px/s for extreme detail) or zoom out (down to 10px/s for a compact overview) using the zoom controls.
+The timeline updates in real-time as you press and release the button, creating a visual representation of your press pattern with millisecond-accurate timing. All time measurements use system timestamps captured at the moment of button press/release events for maximum precision. The display refreshes approximately every 10ms while recording. The timeline automatically scrolls horizontally for longer recordings. The default scale is 50 pixels per second, but you can zoom in (up to 800px/s for extreme detail) or zoom out (down to 10px/s for a compact overview) using the zoom controls.
 
 ## Development
 
